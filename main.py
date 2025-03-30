@@ -11,7 +11,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import MessageChain
 
-@register("timedtask", "Jason.Joeastr", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/advent259141/astrbot_plugin_timedtask")
+@register("timedtask", "astrbot", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/yourusername/astrbot_plugin_timedtask")
 class TimedTaskPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -177,6 +177,37 @@ class TimedTaskPlugin(Star):
                 return
         
         yield event.plain_result(f"❌ 未找到ID为 {task_id} 的任务")
+
+    @filter.command("timedtask_help")
+    async def help_command(self, event: AstrMessageEvent):
+        """显示定时任务插件的帮助信息"""
+        help_text = """📅 定时任务插件使用指南 📅
+        
+【指令列表】
+1️⃣ 设置任务 <时间> <内容>
+   例如: 设置任务 8时30分 早会提醒
+   说明: 创建一个每天固定时间的提醒任务
+
+2️⃣ 任务列表
+   说明: 显示当前会话的所有定时任务
+
+3️⃣ 删除任务 <任务ID>
+   例如: 删除任务 1
+   说明: 删除指定ID的定时任务
+
+4️⃣ timedtask_help
+   说明: 显示此帮助信息
+
+【时间格式】
+时间必须使用"小时时分钟分"的格式
+例如: 8时30分, 12时0分, 23时59分
+
+【提示】
+· 任务ID在设置任务后会自动分配
+· 任务会在每天设定的时间提醒
+· 插件重启后任务不会丢失
+"""
+        yield event.plain_result(help_text)
 
     async def terminate(self):
         """插件卸载时调用"""
