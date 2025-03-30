@@ -1,3 +1,11 @@
+</div>
+
+<div align="center">
+
+![:name](https://count.getloli.com/@astrbot_plugin_timedtask?name=astrbot_plugin_timedtask&theme=booru-lewd&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto)
+
+</div>
+
 # AstrBot 定时任务插件
 
 一个简单易用的群聊定时任务提醒插件，可以设置每日定时提醒。
