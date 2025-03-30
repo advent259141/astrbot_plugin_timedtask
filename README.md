@@ -73,4 +73,4 @@ MIT License
 
 ## 作者
 
-AstrBot Team
+Jason.Joestar
