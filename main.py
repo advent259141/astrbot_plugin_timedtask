@@ -11,7 +11,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api.event import MessageChain
 
-@register("timedtask", "astrbot", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/yourusername/astrbot_plugin_timedtask")
+@register("timedtask", "Jason.Joeastr", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/advent259141/astrbot_plugin_timedtask")
 class TimedTaskPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
