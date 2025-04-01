@@ -6,16 +6,15 @@ import threading
 import json
 import os
 from typing import Dict, List, Tuple, Set, Optional
-
+from astrbot.api.all import *
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
-from astrbot.api.event import MessageChain
 
 @register("timedtask", "astrbot", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/yourusername/astrbot_plugin_timedtask")
 class TimedTaskPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.tasks = {}  # 格式: {umo: [(time_str, content, task_id, countdown_days, start_date), ...]}
+        self.tasks = {}  # 格式: {umo: [(time_str, content, task_id, countdown_days, start_date, target_id), ...]}
         self.next_task_id = 0
         self.task_running = True
         self.executed_tasks = set()  # 记录已执行过的任务，避免重复执行
@@ -132,12 +131,16 @@ class TimedTaskPlugin(Star):
                 for i, task_data in enumerate(list(umo_tasks)):  # 同样使用副本
                     try:
                         # 解构任务数据，适应不同长度的元组
-                        if len(task_data) >= 5:
+                        if len(task_data) >= 6:  # 包含AT信息
+                            time_str, content, task_id, countdown_days, start_date, target_id = task_data
+                        elif len(task_data) >= 5:  # 包含倒计时但不包含AT
                             time_str, content, task_id, countdown_days, start_date = task_data
-                        else:
+                            target_id = None
+                        else:  # 基本任务信息
                             time_str, content, task_id = task_data
                             countdown_days = None
                             start_date = None
+                            target_id = None
                         
                         # 检查倒计时是否已结束
                         if countdown_days is not None and start_date is not None:
@@ -158,13 +161,35 @@ class TimedTaskPlugin(Star):
                         
                         # 检查当前时间是否匹配且该任务今天尚未执行
                         if hour == current_hour and minute == current_minute and task_exec_id not in self.executed_tasks:
-                            # 根据是否有倒计时生成不同的消息
+                            # 构建消息链
+                            message_parts = []
+                            
+                            # 添加任务内容（先构建完整提醒文本）
+                            reminder_text = "⏰ 定时提醒：\n" 
+                            reminder_text += f"📝 内容：{content}\n"
+                            
+                            # 如果有AT目标，在文本中添加提醒对象信息
+                            if target_id:
+                                reminder_text += f"👤 提醒对象：{target_id}\n"
+                            
+                            # 如果有倒计时，添加倒计时信息
                             if countdown_days is not None and start_date is not None:
                                 days_passed = (now.date() - datetime.datetime.strptime(start_date, "%Y-%m-%d").date()).days
                                 days_left = countdown_days - days_passed
-                                message = MessageChain().message(f"⏰ 定时提醒：\n{content}\n(剩余 {days_left} 天)")
-                            else:
-                                message = MessageChain().message(f"⏰ 定时提醒：\n{content}")
+                                reminder_text += f"⌛ 倒计时：剩余 {days_left} 天\n"
+                            
+                            reminder_text += f"🔔 任务ID：#{task_id}"
+                            
+                            # 如果有AT目标，先添加AT组件
+                            if target_id:
+                                message_parts.append(At(qq=target_id))
+                                message_parts.append(Plain("\n"))
+                            
+                            # 添加文本内容
+                            message_parts.append(Plain(reminder_text))
+                            
+                            # 创建消息链
+                            message = MessageChain(message_parts)
                             
                             # 使用统一消息来源发送消息
                             await self.context.send_message(umo, message)
@@ -193,18 +218,26 @@ class TimedTaskPlugin(Star):
             if umo not in self.tasks:
                 self.tasks[umo] = []
             
+            # 检查是否有AT的目标
+            target_id = None
+            for comp in event.message_obj.message:
+                if isinstance(comp, At):
+                    target_id = str(comp.qq)
+                    break
+            
             # 分配任务ID并添加任务
             task_id = self.next_task_id
             self.next_task_id += 1
             
-            # 任务数据现在包括5个元素：时间、内容、任务ID、倒计时天数(None)、开始日期(None)
-            self.tasks[umo].append((time_str, content, task_id, None, None))
+            # 任务数据现在包括6个元素：时间、内容、任务ID、倒计时天数(None)、开始日期(None)、AT目标ID
+            self.tasks[umo].append((time_str, content, task_id, None, None, target_id))
             
             # 保存任务到文件
             self.save_tasks()
             
             # 使用标准化的时间格式显示
-            yield event.plain_result(f"✅ 已设置任务 #{task_id}：将在每天 {formatted_time} 提醒「{content}」")
+            at_info = f"，并会AT用户 {target_id}" if target_id else ""
+            yield event.plain_result(f"✅ 已设置任务 #{task_id}：将在每天 {formatted_time} 提醒「{content}」{at_info}")
         
         except ValueError as e:
             yield event.plain_result(f"❌ {str(e)}")
@@ -231,9 +264,12 @@ class TimedTaskPlugin(Star):
                     # 获取现有的任务数据
                     time_str, content, tid = task_data[:3]
                     
-                    # 更新任务，加入倒计时信息
+                    # 获取可能存在的AT目标ID（第6个元素）
+                    target_id = task_data[5] if len(task_data) >= 6 else None
+                    
+                    # 更新任务，加入倒计时信息，保留AT信息
                     today = datetime.datetime.now().strftime("%Y-%m-%d")
-                    self.tasks[umo][i] = (time_str, content, tid, countdown_days, today)
+                    self.tasks[umo][i] = (time_str, content, tid, countdown_days, today, target_id)
                     
                     self.save_tasks()
                     yield event.plain_result(f"✅ 已为任务 #{task_id} 设置 {countdown_days} 天倒计时")
@@ -259,15 +295,23 @@ class TimedTaskPlugin(Star):
         now = datetime.datetime.now()
         
         for task_data in self.tasks[umo]:
-            if len(task_data) >= 5:
-                time_str, content, task_id, countdown_days, start_date = task_data
+            if len(task_data) >= 6:
+                time_str, content, task_id, countdown_days, start_date, target_id = task_data
                 if countdown_days is not None and start_date is not None:
                     start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
                     days_passed = (now.date() - start_datetime.date()).days
                     days_left = countdown_days - days_passed
-                    task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天)")
+                    at_info = f" (AT用户 {target_id})" if target_id else ""
+                    task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天){at_info}")
                 else:
-                    task_list.append(f"#{task_id}: {time_str} - {content}")
+                    at_info = f" (AT用户 {target_id})" if target_id else ""
+                    task_list.append(f"#{task_id}: {time_str} - {content}{at_info}")
+            elif len(task_data) >= 5:
+                time_str, content, task_id, countdown_days, start_date = task_data
+                start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+                days_passed = (now.date() - start_datetime.date()).days
+                days_left = countdown_days - days_passed
+                task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天)")
             else:
                 time_str, content, task_id = task_data[:3]
                 task_list.append(f"#{task_id}: {time_str} - {content}")
@@ -303,9 +347,8 @@ class TimedTaskPlugin(Star):
 【指令列表】
 1️⃣ 设置任务 <时间> <内容>
    例如: 设置任务 8时30分 早会提醒
-   例如: 设置任务 0830 早会提醒
-   例如: 设置任务 08:30 早会提醒
-   说明: 创建一个每天固定时间的提醒任务
+   例如: 设置任务 8时30分 早会提醒  @用户
+   说明: 创建一个每天固定时间的提醒任务，可以@指定用户
 
 2️⃣ 任务列表
    说明: 显示当前会话的所有定时任务
@@ -330,6 +373,7 @@ class TimedTaskPlugin(Star):
 【提示】
 · 任务ID在设置任务后会自动分配
 · 任务会在每天设定的时间提醒
+· 可以在内容中@用户，提醒时会自动AT该用户
 · 倒计时任务会显示剩余天数
 · 插件重启后任务不会丢失
 """
