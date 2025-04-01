@@ -218,12 +218,20 @@ class TimedTaskPlugin(Star):
             if umo not in self.tasks:
                 self.tasks[umo] = []
             
-            # 检查是否有AT的目标
-            target_id = None
+            # 检查是否有AT的目标 - 收集所有AT
+            at_targets = []
             for comp in event.message_obj.message:
                 if isinstance(comp, At):
-                    target_id = str(comp.qq)
-                    break
+                    at_targets.append(str(comp.qq))
+            
+            # 根据AT数量决定目标
+            target_id = None
+            if len(at_targets) == 1:
+                # 只有一个AT，直接使用
+                target_id = at_targets[0]
+            elif len(at_targets) >= 2:
+                # 有多个AT，假定第一个是对bot的，使用第二个
+                target_id = at_targets[1]
             
             # 分配任务ID并添加任务
             task_id = self.next_task_id
