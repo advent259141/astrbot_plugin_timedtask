@@ -9,13 +9,16 @@ from typing import Dict, List, Tuple, Set, Optional
 from astrbot.api.all import *
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
+import astrbot.api.message_components as Comp
 
 @register("timedtask", "astrbot", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/yourusername/astrbot_plugin_timedtask")
 class TimedTaskPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
-        self.tasks = {}  # 格式: {umo: [(time_str, content, task_id, countdown_days, start_date, target_id), ...]}
-        self.next_task_id = 0
+        # 格式: {umo: [(time_str, content, task_id, countdown_days, start_date, target_id, image_urls), ...]}
+        # 其中image_urls是一个图片URL列表
+        self.tasks = {}
+        self.next_task_ids = {}  # 每个群聊的下一个任务ID，格式: {umo: next_id}
         self.task_running = True
         self.executed_tasks = set()  # 记录已执行过的任务，避免重复执行
         self.last_day = datetime.datetime.now().day  # 记录上次执行的日期
@@ -84,7 +87,20 @@ class TimedTaskPlugin(Star):
                 with open(self.save_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self.tasks = data.get("tasks", {})
-                    self.next_task_id = data.get("next_task_id", 0)
+                    
+                    # 兼容旧版本保存的数据，同时加载每个群聊的下一个任务ID
+                    if "next_task_ids" in data:
+                        self.next_task_ids = data.get("next_task_ids", {})
+                    else:
+                        # 旧版本数据，为每个群聊生成next_task_id
+                        self.next_task_ids = {}
+                        for umo, tasks in self.tasks.items():
+                            if tasks:
+                                max_id = max(task[2] for task in tasks) + 1
+                                self.next_task_ids[umo] = max_id
+                            else:
+                                self.next_task_ids[umo] = 0
+                            
                 print(f"从 {self.save_path} 成功加载了 {sum(len(tasks) for tasks in self.tasks.values())} 个任务")
             else:
                 print(f"任务文件 {self.save_path} 不存在，使用空任务列表")
@@ -92,7 +108,7 @@ class TimedTaskPlugin(Star):
             print(f"加载任务失败: {e}")
             # 如果加载失败，使用空任务列表
             self.tasks = {}
-            self.next_task_id = 0
+            self.next_task_ids = {}
 
     def save_tasks(self):
         """保存任务到文件"""
@@ -103,7 +119,7 @@ class TimedTaskPlugin(Star):
             
             data = {
                 "tasks": self.tasks,
-                "next_task_id": self.next_task_id
+                "next_task_ids": self.next_task_ids
             }
             
             with open(self.save_path, "w", encoding="utf-8") as f:
@@ -131,16 +147,21 @@ class TimedTaskPlugin(Star):
                 for i, task_data in enumerate(list(umo_tasks)):  # 同样使用副本
                     try:
                         # 解构任务数据，适应不同长度的元组
-                        if len(task_data) >= 6:  # 包含AT信息
+                        if len(task_data) >= 7:  # 包含图片URLs
+                            time_str, content, task_id, countdown_days, start_date, target_id, image_urls = task_data
+                        elif len(task_data) >= 6:  # 包含AT信息但无图片
                             time_str, content, task_id, countdown_days, start_date, target_id = task_data
-                        elif len(task_data) >= 5:  # 包含倒计时但不包含AT
+                            image_urls = []
+                        elif len(task_data) >= 5:  # 包含倒计时但不包含AT和图片
                             time_str, content, task_id, countdown_days, start_date = task_data
                             target_id = None
+                            image_urls = []
                         else:  # 基本任务信息
                             time_str, content, task_id = task_data
                             countdown_days = None
                             start_date = None
                             target_id = None
+                            image_urls = []
                         
                         # 检查倒计时是否已结束
                         if countdown_days is not None and start_date is not None:
@@ -164,7 +185,12 @@ class TimedTaskPlugin(Star):
                             # 构建消息链
                             message_parts = []
                             
-                            # 添加任务内容（先构建完整提醒文本）
+                            # 如果有AT目标，先添加AT组件
+                            if target_id:
+                                message_parts.append(Comp.At(qq=target_id))
+                                message_parts.append(Comp.Plain("\n"))
+                            
+                            # 添加任务内容文本
                             reminder_text = "⏰ 定时提醒：\n" 
                             reminder_text += f"📝 内容：{content}\n"
                             
@@ -178,15 +204,21 @@ class TimedTaskPlugin(Star):
                                 days_left = countdown_days - days_passed
                                 reminder_text += f"⌛ 倒计时：剩余 {days_left} 天\n"
                             
+                            # 修复：确保任务ID后没有其他内容，单独成行
                             reminder_text += f"🔔 任务ID：#{task_id}"
                             
-                            # 如果有AT目标，先添加AT组件
-                            if target_id:
-                                message_parts.append(At(qq=target_id))
-                                message_parts.append(Plain("\n"))
-                            
                             # 添加文本内容
-                            message_parts.append(Plain(reminder_text))
+                            message_parts.append(Comp.Plain(reminder_text))
+                            
+                            # 添加图片(如果有)，确保在新的一行
+                            if image_urls:
+                                message_parts.append(Comp.Plain("\n\n📷 附带图片："))
+                                for url in image_urls:
+                                    try:
+                                        message_parts.append(Comp.Plain("\n"))
+                                        message_parts.append(Comp.Image.fromURL(url))
+                                    except Exception as e:
+                                        print(f"加载图片失败: {url}, 错误: {e}")
                             
                             # 创建消息链
                             message = MessageChain(message_parts)
@@ -214,15 +246,23 @@ class TimedTaskPlugin(Star):
             # 获取统一消息来源
             umo = event.unified_msg_origin
             
-            # 初始化该来源的任务列表
+            # 初始化该来源的任务列表和next_task_id
             if umo not in self.tasks:
                 self.tasks[umo] = []
+            if umo not in self.next_task_ids:
+                self.next_task_ids[umo] = 0
             
-            # 检查是否有AT的目标 - 收集所有AT
+            # 检查是否有AT的目标和图片 - 收集所有AT和图片URL
             at_targets = []
+            image_urls = []
+            
             for comp in event.message_obj.message:
                 if isinstance(comp, At):
                     at_targets.append(str(comp.qq))
+                elif isinstance(comp, Image):
+                    # 如果是图片，保存其URL
+                    if hasattr(comp, 'url') and comp.url:
+                        image_urls.append(comp.url)
             
             # 根据AT数量决定目标
             target_id = None
@@ -234,18 +274,20 @@ class TimedTaskPlugin(Star):
                 target_id = at_targets[1]
             
             # 分配任务ID并添加任务
-            task_id = self.next_task_id
-            self.next_task_id += 1
+            task_id = self.next_task_ids[umo]
+            self.next_task_ids[umo] += 1
             
-            # 任务数据现在包括6个元素：时间、内容、任务ID、倒计时天数(None)、开始日期(None)、AT目标ID
-            self.tasks[umo].append((time_str, content, task_id, None, None, target_id))
+            # 任务数据现在包括7个元素：时间、内容、任务ID、倒计时天数(None)、开始日期(None)、AT目标ID、图片URLs
+            self.tasks[umo].append((time_str, content, task_id, None, None, target_id, image_urls))
             
             # 保存任务到文件
             self.save_tasks()
             
             # 使用标准化的时间格式显示
             at_info = f"，并会AT用户 {target_id}" if target_id else ""
-            yield event.plain_result(f"✅ 已设置任务 #{task_id}：将在每天 {formatted_time} 提醒「{content}」{at_info}")
+            img_info = f"，附带 {len(image_urls)} 张图片" if image_urls else ""
+            
+            yield event.plain_result(f"✅ 已设置任务 #{task_id}：将在每天 {formatted_time} 提醒「{content}」{at_info}{img_info}")
         
         except ValueError as e:
             yield event.plain_result(f"❌ {str(e)}")
@@ -270,14 +312,19 @@ class TimedTaskPlugin(Star):
             for i, task_data in enumerate(self.tasks[umo]):
                 if len(task_data) >= 3 and task_data[2] == task_id:
                     # 获取现有的任务数据
-                    time_str, content, tid = task_data[:3]
+                    if len(task_data) >= 7:  # 包含图片URLs
+                        time_str, content, tid, _, _, target_id, image_urls = task_data
+                    elif len(task_data) >= 6:  # 包含AT信息
+                        time_str, content, tid, _, _, target_id = task_data
+                        image_urls = []
+                    else:
+                        time_str, content, tid = task_data[:3]
+                        target_id = None
+                        image_urls = []
                     
-                    # 获取可能存在的AT目标ID（第6个元素）
-                    target_id = task_data[5] if len(task_data) >= 6 else None
-                    
-                    # 更新任务，加入倒计时信息，保留AT信息
+                    # 更新任务，加入倒计时信息，保留AT信息和图片URLs
                     today = datetime.datetime.now().strftime("%Y-%m-%d")
-                    self.tasks[umo][i] = (time_str, content, tid, countdown_days, today, target_id)
+                    self.tasks[umo][i] = (time_str, content, tid, countdown_days, today, target_id, image_urls)
                     
                     self.save_tasks()
                     yield event.plain_result(f"✅ 已为任务 #{task_id} 设置 {countdown_days} 天倒计时")
@@ -303,7 +350,20 @@ class TimedTaskPlugin(Star):
         now = datetime.datetime.now()
         
         for task_data in self.tasks[umo]:
-            if len(task_data) >= 6:
+            if len(task_data) >= 7:
+                time_str, content, task_id, countdown_days, start_date, target_id, image_urls = task_data
+                if countdown_days is not None and start_date is not None:
+                    start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+                    days_passed = (now.date() - start_datetime.date()).days
+                    days_left = countdown_days - days_passed
+                    at_info = f" (AT用户 {target_id})" if target_id else ""
+                    img_info = f" (附带 {len(image_urls)} 张图片)" if image_urls else ""
+                    task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天){at_info}{img_info}")
+                else:
+                    at_info = f" (AT用户 {target_id})" if target_id else ""
+                    img_info = f" (附带 {len(image_urls)} 张图片)" if image_urls else ""
+                    task_list.append(f"#{task_id}: {time_str} - {content}{at_info}{img_info}")
+            elif len(task_data) >= 6:
                 time_str, content, task_id, countdown_days, start_date, target_id = task_data
                 if countdown_days is not None and start_date is not None:
                     start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
@@ -316,10 +376,13 @@ class TimedTaskPlugin(Star):
                     task_list.append(f"#{task_id}: {time_str} - {content}{at_info}")
             elif len(task_data) >= 5:
                 time_str, content, task_id, countdown_days, start_date = task_data
-                start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
-                days_passed = (now.date() - start_datetime.date()).days
-                days_left = countdown_days - days_passed
-                task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天)")
+                if countdown_days is not None and start_date is not None:
+                    start_datetime = datetime.datetime.strptime(start_date, "%Y-%m-%d")
+                    days_passed = (now.date() - start_datetime.date()).days
+                    days_left = countdown_days - days_passed
+                    task_list.append(f"#{task_id}: {time_str} - {content} (剩余 {days_left} 天)")
+                else:
+                    task_list.append(f"#{task_id}: {time_str} - {content}")
             else:
                 time_str, content, task_id = task_data[:3]
                 task_list.append(f"#{task_id}: {time_str} - {content}")
@@ -328,24 +391,93 @@ class TimedTaskPlugin(Star):
 
     @filter.command("删除任务")
     async def delete_task(self, event: AstrMessageEvent, task_id: int):
-        """删除指定ID的定时任务"""
+        """删除指定ID的定时任务，并自动重排剩余任务ID"""
         umo = event.unified_msg_origin
         
         if umo not in self.tasks:
             yield event.plain_result("当前会话没有设置任何定时任务")
             return
         
-        for i, (time_str, content, tid, *_) in enumerate(self.tasks[umo]):
-            if tid == task_id:
+        found = False
+        for i, task_data in enumerate(self.tasks[umo]):
+            if len(task_data) >= 3 and task_data[2] == task_id:
+                # 删除指定任务
                 self.tasks[umo].pop(i)
-                
-                # 保存任务到文件
-                self.save_tasks()
-                
-                yield event.plain_result(f"✅ 已删除任务 #{task_id}")
-                return
+                found = True
+                break
         
-        yield event.plain_result(f"❌ 未找到ID为 {task_id} 的任务")
+        if not found:
+            yield event.plain_result(f"❌ 未找到ID为 {task_id} 的任务")
+            return
+        
+        # 自动重排剩余任务的ID
+        tasks = self.tasks[umo]
+        new_tasks = []
+        
+        # 为所有剩余任务重新分配ID
+        for i, task_data in enumerate(tasks):
+            if len(task_data) >= 7:  # 包含图片URLs
+                time_str, content, _, countdown_days, start_date, target_id, image_urls = task_data
+                new_tasks.append((time_str, content, i, countdown_days, start_date, target_id, image_urls))
+            elif len(task_data) >= 6:  # 包含AT信息
+                time_str, content, _, countdown_days, start_date, target_id = task_data
+                new_tasks.append((time_str, content, i, countdown_days, start_date, target_id, []))
+            elif len(task_data) >= 5:  # 包含倒计时
+                time_str, content, _, countdown_days, start_date = task_data
+                new_tasks.append((time_str, content, i, countdown_days, start_date, None, []))
+            else:
+                time_str, content, _ = task_data[:3]
+                new_tasks.append((time_str, content, i, None, None, None, []))
+        
+        # 更新任务列表和下一个任务ID
+        self.tasks[umo] = new_tasks
+        self.next_task_ids[umo] = len(new_tasks)
+        
+        # 保存任务到文件
+        self.save_tasks()
+        
+        yield event.plain_result(f"✅ 已删除任务 #{task_id} 并重新排序剩余任务ID")
+
+    @filter.command("重排任务ID")
+    async def reorder_task_ids(self, event: AstrMessageEvent):
+        """重新排序当前会话的所有任务ID"""
+        umo = event.unified_msg_origin
+        
+        if umo not in self.tasks or not self.tasks[umo]:
+            yield event.plain_result("当前会话没有设置任何定时任务")
+            return
+        
+        try:
+            # 获取当前任务列表
+            tasks = self.tasks[umo]
+            new_tasks = []
+            
+            # 为所有任务重新分配ID
+            for i, task_data in enumerate(tasks):
+                if len(task_data) >= 7:  # 包含图片URLs
+                    time_str, content, _, countdown_days, start_date, target_id, image_urls = task_data
+                    new_tasks.append((time_str, content, i, countdown_days, start_date, target_id, image_urls))
+                elif len(task_data) >= 6:  # 包含AT信息
+                    time_str, content, _, countdown_days, start_date, target_id = task_data
+                    new_tasks.append((time_str, content, i, countdown_days, start_date, target_id, []))
+                elif len(task_data) >= 5:  # 包含倒计时
+                    time_str, content, _, countdown_days, start_date = task_data
+                    new_tasks.append((time_str, content, i, countdown_days, start_date, None, []))
+                else:
+                    time_str, content, _ = task_data[:3]
+                    new_tasks.append((time_str, content, i, None, None, None, []))
+            
+            # 更新任务列表和下一个任务ID
+            self.tasks[umo] = new_tasks
+            self.next_task_ids[umo] = len(new_tasks)
+            
+            # 保存任务到文件
+            self.save_tasks()
+            
+            yield event.plain_result(f"✅ 已重新排序 {len(new_tasks)} 个任务的ID")
+        
+        except Exception as e:
+            yield event.plain_result(f"❌ 重排序任务失败：{str(e)}")
 
     @filter.command("timedtask_help")
     async def help_command(self, event: AstrMessageEvent):
@@ -355,21 +487,25 @@ class TimedTaskPlugin(Star):
 【指令列表】
 1️⃣ 设置任务 <时间> <内容>
    例如: 设置任务 8时30分 早会提醒
-   例如: 设置任务 8时30分 早会提醒  @用户
-   说明: 创建一个每天固定时间的提醒任务，可以@指定用户
+   例如: 设置任务 8时30分 早会提醒 @用户
+   例如: 设置任务 8时30分 早会提醒 [图片]
+   说明: 创建一个每天固定时间的提醒任务，可以@指定用户，也可以包含图片
 
 2️⃣ 任务列表
    说明: 显示当前会话的所有定时任务
 
 3️⃣ 删除任务 <任务ID>
    例如: 删除任务 1
-   说明: 删除指定ID的定时任务
+   说明: 删除指定ID的定时任务（会自动重排序剩余任务ID）
 
 4️⃣ 设置倒计时 <任务ID> <天数>
    例如: 设置倒计时 1 30
    说明: 为指定ID的任务设置倒计时天数，倒计时结束后任务将自动停止
 
-5️⃣ timedtask_help
+5️⃣ 重排任务ID
+   说明: 手动重新排序当前会话的所有任务ID，使其连续
+
+6️⃣ timedtask_help
    说明: 显示此帮助信息
 
 【时间格式】
@@ -379,10 +515,12 @@ class TimedTaskPlugin(Star):
 · HH:MM: 例如 08:30, 12:00
 
 【提示】
-· 任务ID在设置任务后会自动分配
+· 任务ID在设置任务后会自动分配，每个群聊独立编号
 · 任务会在每天设定的时间提醒
 · 可以在内容中@用户，提醒时会自动AT该用户
+· 可以在设置任务时包含图片，提醒时会一并发送
 · 倒计时任务会显示剩余天数
+· 删除任务后会自动重排序剩余任务ID
 · 插件重启后任务不会丢失
 """
         yield event.plain_result(help_text)
