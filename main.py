@@ -12,8 +12,9 @@ from astrbot.api.all import *
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
+from astrbot.api.message_components import At, Image
 
-@register("timedtask", "astrbot", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/yourusername/astrbot_plugin_timedtask")
+@register("timedtask", "Jason.Joestar", "一个群聊定时任务提醒插件", "1.0.0", "https://github.com/advent259141/astrbot_plugin_timedtask")
 class TimedTaskPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -137,24 +138,214 @@ class TimedTaskPlugin(Star):
 
     def download_image(self, url: str) -> str:
         """下载图片到本地并返回本地路径"""
+        # 生成唯一文件名
+        filename = f"{uuid.uuid4()}.jpg"
+        filepath = os.path.join(self.image_dir, filename)
+        
+        # 尝试多种下载方法
+        methods = [
+            self._download_with_session,
+            self._download_with_requests,
+            self._download_with_urllib,
+            self._download_with_custom_ssl,
+            self._download_with_simple_get,
+            self._download_with_no_verify
+        ]
+        
+        for i, method in enumerate(methods):
+            try:
+                print(f"尝试下载方法 {i+1}: {method.__name__}")
+                if method(url, filepath):
+                    print(f"图片已下载到: {filepath}")
+                    return filepath
+            except Exception as e:
+                print(f"下载方法 {i+1} 失败: {e}")
+                continue
+        
+        # 添加更多下载方法
+        methods.append(self._download_with_simple_get)
+        methods.append(self._download_with_no_verify)
+        
+        for i, method in enumerate(methods):
+            try:
+                print(f"尝试下载方法 {i+1}: {method.__name__}")
+                if method(url, filepath):
+                    print(f"图片已下载到: {filepath}")
+                    return filepath
+            except Exception as e:
+                print(f"下载方法 {i+1} 失败: {e}")
+                continue
+        
+        print(f"所有下载方法都失败了")
+        return ""
+    
+    def _download_with_session(self, url: str, filepath: str) -> bool:
+        """使用Session下载图片"""
+        import ssl
+        
+        # 创建自定义SSL上下文
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        })
+        
         try:
-            # 生成唯一文件名
-            filename = f"{uuid.uuid4()}.jpg"
-            filepath = os.path.join(self.image_dir, filename)
-            
-            # 下载图片
-            response = requests.get(url, timeout=10)
+            response = session.get(url, timeout=30, verify=False, stream=True)
             if response.status_code == 200:
                 with open(filepath, 'wb') as f:
-                    f.write(response.content)
-                print(f"图片已下载到: {filepath}")
-                return filepath
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                return True
             else:
-                print(f"下载图片失败，状态码: {response.status_code}")
-                return ""
-        except Exception as e:
-            print(f"下载图片异常: {e}")
-            return ""
+                print(f"Session方法状态码: {response.status_code}")
+                return False
+        finally:
+            session.close()
+    
+    def _download_with_requests(self, url: str, filepath: str) -> bool:
+        """使用requests直接下载"""
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'close',  # 强制关闭连接
+            'Cache-Control': 'no-cache'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=30, verify=False, stream=True)
+        if response.status_code == 200:
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return True
+        else:
+            print(f"Requests方法状态码: {response.status_code}")
+            return False
+    
+    def _download_with_urllib(self, url: str, filepath: str) -> bool:
+        """使用urllib下载"""
+        import urllib.request
+        import ssl
+        
+        # 创建SSL上下文，忽略证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # 创建请求对象
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        req.add_header('Accept', 'image/*,*/*')
+        req.add_header('Accept-Language', 'zh-CN,zh;q=0.9')
+        
+        # 创建HTTPS处理器
+        https_handler = urllib.request.HTTPSHandler(context=ssl_context)
+        opener = urllib.request.build_opener(https_handler)
+        
+        with opener.open(req, timeout=30) as response:
+            if response.status == 200:
+                with open(filepath, 'wb') as f:
+                    f.write(response.read())
+                return True
+            else:
+                print(f"urllib方法状态码: {response.status}")
+                return False
+    
+    def _download_with_custom_ssl(self, url: str, filepath: str) -> bool:
+        """使用自定义SSL配置下载"""
+        import ssl
+        try:
+            import urllib3
+            # 禁用urllib3警告
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except ImportError:
+            pass
+        
+        session = requests.Session()
+        
+        # 设置headers
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0',
+            'Accept': 'image/avif,image/webp,*/*',
+            'Accept-Language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Pragma': 'no-cache',
+            'Cache-Control': 'no-cache'
+        })
+        
+        try:
+            response = session.get(
+                url, 
+                timeout=30, 
+                verify=False, 
+                stream=True,
+                allow_redirects=True
+            )
+            
+            if response.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024):
+                        if chunk:
+                            f.write(chunk)
+                return True
+            else:
+                print(f"自定义SSL方法状态码: {response.status_code}")
+                return False
+        except Exception as ssl_error:
+            print(f"SSL下载方法异常: {ssl_error}")
+            return False
+        finally:
+            session.close()
+    
+    def _download_with_simple_get(self, url: str, filepath: str) -> bool:
+        """使用简单的GET请求下载（类似wget）"""
+        response = requests.get(url, stream=True, verify=False)
+        if response.status_code == 200:
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return True
+        else:
+            print(f"简单GET方法状态码: {response.status_code}")
+            return False
+    
+    def _download_with_no_verify(self, url: str, filepath: str) -> bool:
+        """无视SSL证书下载（不推荐，存在安全风险）"""
+        response = requests.get(url, stream=True, verify=False)
+        if response.status_code == 200:
+            with open(filepath, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return True
+        else:
+            print(f"无验证下载方法状态码: {response.status_code}")
+            return False
 
     async def check_tasks(self):
         """检查并执行到期的任务，每10秒检查一次"""
